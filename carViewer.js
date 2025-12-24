@@ -67,6 +67,68 @@ const create3DEnvironment = () => {
   ground.receiveShadow = true;
   scene.add(ground);
 
+  // Add animated road for Drive mode
+  const roadGeometry = new THREE.PlaneGeometry(4, 100);
+  const roadMaterial = new THREE.MeshStandardMaterial({
+    color: 0x333333,
+    roughness: 0.8,
+    metalness: 0.1
+  });
+  const road = new THREE.Mesh(roadGeometry, roadMaterial);
+  road.rotation.x = -Math.PI / 2;
+  road.position.y = -0.49; // Slightly above ground to prevent z-fighting
+  road.position.z = 0;
+  road.visible = false; // Hidden by default (showroom mode)
+  scene.add(road);
+
+  // Add road lane markings
+  const laneMarkings = [];
+  const laneGeometry = new THREE.PlaneGeometry(0.2, 3);
+  const laneMaterial = new THREE.MeshBasicMaterial({ color: 0xffff00 });
+  
+  for (let i = 0; i < 20; i++) {
+    const lane = new THREE.Mesh(laneGeometry, laneMaterial);
+    lane.rotation.x = -Math.PI / 2;
+    lane.position.y = -0.48;
+    lane.position.z = i * 10 - 50; // Spread along the road
+    lane.visible = false;
+    laneMarkings.push(lane);
+    scene.add(lane);
+  }
+
+  // Add trees/environment objects for Drive mode
+  const environmentObjects = [];
+  for (let side = -1; side <= 1; side += 2) { // left and right sides
+    for (let i = 0; i < 10; i++) {
+      // Simple tree representation (cone + cylinder)
+      const trunkGeometry = new THREE.CylinderGeometry(0.2, 0.3, 2, 8);
+      const trunkMaterial = new THREE.MeshStandardMaterial({ color: 0x4a3520 });
+      const trunk = new THREE.Mesh(trunkGeometry, trunkMaterial);
+      
+      const foliageGeometry = new THREE.ConeGeometry(1.5, 3, 8);
+      const foliageMaterial = new THREE.MeshStandardMaterial({ color: 0x228b22 });
+      const foliage = new THREE.Mesh(foliageGeometry, foliageMaterial);
+      foliage.position.y = 2.5;
+      
+      const tree = new THREE.Group();
+      tree.add(trunk);
+      tree.add(foliage);
+      tree.position.set(side * (6 + Math.random() * 2), 0.5, i * 20 - 50);
+      tree.castShadow = true;
+      tree.visible = false;
+      environmentObjects.push(tree);
+      scene.add(tree);
+    }
+  }
+
+  // Animation state for driving mode
+  let isDriving = false;
+  let roadOffset = 0;
+  const BASE_ROAD_SPEED = 0.3; // Base speed multiplier for road animation
+  let currentSpeed = 0; // Current speed in MPH (0-75)
+  let roadSpeed = 0; // Actual animation speed (calculated from currentSpeed)
+  let isDayMode = true; // Day/night mode toggle
+
   // Add OrbitControls for mouse interaction
   const controls = new THREE.OrbitControls(camera, renderer.domElement);
   controls.enableDamping = true;
@@ -101,10 +163,17 @@ const create3DEnvironment = () => {
     <div id="cam-target">Target: --</div>
     <div id="cam-dist">Distance: --</div>
     <div id="cam-angles">Azimuth: --°, Polar: --°</div>
-    <div style="margin-top:6px;display:flex;gap:6px">
+    <div style="margin-top:6px;padding:6px;background:rgba(255,255,255,0.05);border-radius:4px;">
+      <div style="font-weight:600;margin-bottom:4px">Speed Simulation</div>
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;">
+        <input type="range" id="speed-slider" min="0" max="75" value="0" step="1" style="flex:1;"/>
+        <span id="speed-display" style="min-width:50px;text-align:right;">0 mph</span>
+      </div>
+      <div style="font-size:10px;opacity:0.7;">Drag slider or use API to set speed</div>
+    </div>
+    <div style="margin-top:6px;">
       <button id="btn-copy" title="Copy camera state">Copy</button>
-      <button id="btn-set-home" title="Save as Home">Set Home</button>
-      <button id="btn-go-home" title="Go to Home">Go Home</button>
+      <button id="btn-day-night" title="Toggle Day/Night Mode">Day Mode</button>
     </div>
     <div style="margin-top:6px;font-size:10px;opacity:0.8">Tip: press 'I' to toggle this panel</div>
   `;
@@ -120,8 +189,26 @@ const create3DEnvironment = () => {
   const camDistEl = cameraInfo.querySelector('#cam-dist');
   const camAnglesEl = cameraInfo.querySelector('#cam-angles');
   const copyBtn = cameraInfo.querySelector('#btn-copy');
-  const setHomeBtn = cameraInfo.querySelector('#btn-set-home');
-  const goHomeBtn = cameraInfo.querySelector('#btn-go-home');
+  const dayNightBtn = cameraInfo.querySelector('#btn-day-night');
+  const speedSlider = cameraInfo.querySelector('#speed-slider');
+  const speedDisplay = cameraInfo.querySelector('#speed-display');
+
+  // Speed calculation: convert MPH to animation speed
+  // At 50 MPH (typical highway speed), we want reasonable animation speed (BASE_ROAD_SPEED * 1.0)
+  // Speed range: 0-75 MPH (clamped at 75 for speeds above)
+  function updateSpeed(mph) {
+    // Clamp speed to 0-75 MPH range
+    currentSpeed = Math.max(0, Math.min(75, Number(mph) || 0));
+    // Linear mapping: 0 MPH = 0 speed, 50 MPH = BASE_ROAD_SPEED, 75 MPH = BASE_ROAD_SPEED * 1.5
+    roadSpeed = (currentSpeed / 50) * BASE_ROAD_SPEED;
+    if (speedDisplay) speedDisplay.textContent = `${currentSpeed.toFixed(0)} mph`;
+    if (speedSlider) speedSlider.value = currentSpeed;
+  }
+
+  // Speed slider input
+  speedSlider.addEventListener('input', (e) => {
+    updateSpeed(e.target.value);
+  });
 
   function fmtVec3(v) {
     return `${v.x.toFixed(3)}, ${v.y.toFixed(3)}, ${v.z.toFixed(3)}`;
@@ -187,15 +274,32 @@ const create3DEnvironment = () => {
     }
   });
 
-  // Set Home and Go Home
-  setHomeBtn.addEventListener('click', () => {
-    setPreset('Home');
+  // Day/Night mode toggle
+  dayNightBtn.addEventListener('click', () => {
+    isDayMode = !isDayMode;
+    dayNightBtn.textContent = isDayMode ? 'Day Mode' : 'Night Mode';
+    updateEnvironmentLighting();
+    showToast(isDayMode ? 'Switched to Day Mode' : 'Switched to Night Mode');
   });
 
-  goHomeBtn.addEventListener('click', () => {
-    if (!cameraPresets['Home']) { showToast('No Home set'); return; }
-    goToPreset('Home', 800);
-  });
+  // Update environment lighting based on day/night mode
+  function updateEnvironmentLighting() {
+    if (isDriving) {
+      // Driving mode - update for day/night
+      if (isDayMode) {
+        // Day: bright blue sky
+        renderer.setClearColor(0x87ceeb);
+        scene.fog.color.setHex(0x87ceeb);
+        ambientLight.intensity = 0.6;
+      } else {
+        // Night: dark blue/purple sky
+        renderer.setClearColor(0x0a0a2e);
+        scene.fog.color.setHex(0x0a0a2e);
+        ambientLight.intensity = 0.3;
+      }
+    }
+    // Showroom mode is unaffected by day/night toggle
+  }
 
   // --- Presets storage (supports multiple named camera presets) ---
   const PRESETS_KEY = 'cameraPresets';
@@ -290,80 +394,10 @@ const create3DEnvironment = () => {
     });
   }
 
-  // --- Presets UI ---
-  const presetContainer = document.createElement('div');
-  presetContainer.style.marginTop = '8px';
-  presetContainer.style.display = 'flex';
-  presetContainer.style.gap = '6px';
-  presetContainer.style.alignItems = 'center';
-
-  const presetSelect = document.createElement('select');
-  presetSelect.id = 'preset-select';
-  presetSelect.style.minWidth = '120px';
-  const goPresetBtn = document.createElement('button'); goPresetBtn.textContent = 'Go';
-  const setPresetBtn = document.createElement('button'); setPresetBtn.textContent = 'Set';
-  const deletePresetBtn = document.createElement('button'); deletePresetBtn.textContent = 'Delete';
-  const importPresetBtn = document.createElement('button'); importPresetBtn.textContent = 'Import';
-
-  presetContainer.appendChild(presetSelect);
-  presetContainer.appendChild(goPresetBtn);
-  presetContainer.appendChild(setPresetBtn);
-  presetContainer.appendChild(deletePresetBtn);
-  presetContainer.appendChild(importPresetBtn);
-  cameraInfo.appendChild(presetContainer);
-
+  // --- Presets UI (removed - keeping presets system internal) ---
   function updatePresetsUI() {
-    presetSelect.innerHTML = '';
-    const names = Object.keys(cameraPresets).sort();
-    names.forEach(name => {
-      const opt = document.createElement('option');
-      opt.value = name;
-      opt.textContent = name;
-      presetSelect.appendChild(opt);
-    });
-    goPresetBtn.disabled = names.length === 0;
-    deletePresetBtn.disabled = names.length === 0 || !presetSelect.value;
+    // No-op: UI removed but function kept for compatibility
   }
-
-  goPresetBtn.addEventListener('click', () => {
-    const name = presetSelect.value;
-    if (!name) { showToast('No preset selected'); return; }
-    goToPreset(name, 1000);
-  });
-
-  setPresetBtn.addEventListener('click', () => {
-    const name = prompt('Preset name:', presetSelect.value || 'NewPreset');
-    if (!name) return;
-    setPreset(name);
-  });
-
-  deletePresetBtn.addEventListener('click', () => {
-    const name = presetSelect.value;
-    if (!name) { showToast('No preset selected'); return; }
-    if (!confirm(`Delete preset "${name}"?`)) return;
-    delete cameraPresets[name];
-    savePresets(cameraPresets);
-    updatePresetsUI();
-    showToast('Preset deleted');
-  });
-
-  importPresetBtn.addEventListener('click', () => {
-    const name = prompt('Name for imported preset:', 'Drive');
-    if (!name) return;
-    const json = prompt('Paste preset JSON (position/target)');
-    if (!json) return;
-    try {
-      const data = JSON.parse(json);
-      if (!data.position || !data.target) { showToast('Invalid JSON'); return; }
-      const normalized = normalizePresetData(data);
-      cameraPresets[name] = normalized;
-      savePresets(cameraPresets);
-      updatePresetsUI();
-      showToast('Imported preset');
-    } catch (e) { showToast('Invalid JSON'); }
-  });
-
-  updatePresetsUI();
 
   // Interaction & mode state
   let currentMode = null; // 'Home' or 'Drive' or null
@@ -381,15 +415,71 @@ const create3DEnvironment = () => {
   function updateParkBrakeUI(val) {
     park_brake = Number(val) ? 1 : 0;
     if (signalStatus) signalStatus.textContent = `park_brake: ${park_brake} (mode: ${currentMode || 'none'})`;
-    if (simBrakeBtn) simBrakeBtn.textContent = park_brake === 1 ? 'Sim Brake Enable' : 'Sim Brake Release';
+    // Button label shows the ACTION to perform: if brake is engaged (1), show "Release"; if released (0), show "Enable"
+    if (simBrakeBtn) simBrakeBtn.textContent = park_brake === 1 ? 'Sim Brake Release' : 'Sim Brake Enable';
   }
 
   function setCurrentMode(name) {
     currentMode = name;
-    if (name === 'Home') updateParkBrakeUI(1);
-    else if (name === 'Drive') updateParkBrakeUI(0);
-    else if (park_brake === null) updateParkBrakeUI(0);
+    if (name === 'Home') {
+      updateParkBrakeUI(1);
+      setShowroomMode();
+    } else if (name === 'Drive') {
+      updateParkBrakeUI(0);
+      setDrivingMode();
+    } else if (park_brake === null) {
+      updateParkBrakeUI(0);
+    }
     if (revertTimer) { clearTimeout(revertTimer); revertTimer = null; }
+  }
+
+  // Switch to showroom mode (spotlights, static environment)
+  function setShowroomMode() {
+    isDriving = false;
+    
+    // Show showroom ground, hide road
+    ground.visible = true;
+    road.visible = false;
+    laneMarkings.forEach(lane => lane.visible = false);
+    environmentObjects.forEach(obj => obj.visible = false);
+    
+    // Enable showroom lighting
+    spotLight1.visible = true;
+    spotLight2.visible = true;
+    rimLight.visible = true;
+    ambientLight.intensity = 0.2;
+    
+    // Dark showroom background
+    renderer.setClearColor(0x1a1a1a);
+    scene.fog.color.setHex(0x1a1a1a);
+  }
+
+  // Switch to driving mode (natural lighting, moving road)
+  function setDrivingMode() {
+    isDriving = true;
+    roadOffset = 0; // Reset road position
+    
+    // Hide showroom ground, show road
+    ground.visible = false;
+    road.visible = true;
+    laneMarkings.forEach(lane => lane.visible = true);
+    environmentObjects.forEach(obj => obj.visible = true);
+    
+    // Disable spotlights for more natural outdoor lighting
+    spotLight1.visible = false;
+    spotLight2.visible = false;
+    rimLight.visible = false;
+    
+    // Apply day/night lighting
+    if (isDayMode) {
+      ambientLight.intensity = 0.6; // Bright daylight
+      renderer.setClearColor(0x87ceeb); // Sky blue
+      scene.fog.color.setHex(0x87ceeb);
+    } else {
+      ambientLight.intensity = 0.3; // Dim night lighting
+      renderer.setClearColor(0x0a0a2e); // Dark night sky
+      scene.fog.color.setHex(0x0a0a2e);
+    }
   }
 
   // Prevent looking under the floor and auto-revert after interactions
@@ -523,20 +613,20 @@ const create3DEnvironment = () => {
       target: [0, 0, 0]
     };
     savePresets(cameraPresets);
-    updatePresetsUI();
     console.log('Drive preset added from supplied data');
   }
 
-  // initialize current mode to Home (if present) or Drive (if present)
-  if (cameraPresets['Home']) setCurrentMode('Home');
-  else if (cameraPresets['Drive']) setCurrentMode('Drive');
+  // Add default Home preset if not already set
+  if (!cameraPresets['Home']) {
+    cameraPresets['Home'] = {
+      position: [-4.358857444267401, 1.5797084394163963, 3.222751650234066],
+      target: [0, 0, 0]
+    };
+    savePresets(cameraPresets);
+    console.log('Home preset added as default');
+  }
 
-  // Convenience API: parent project can directly set parking brake state
-  window.setParkingBrakeState = function(val) {
-    handleParkingBrake(val);
-  };
-
-  // --- Signals (parking brake) ---
+  // --- Create UI elements for parking brake BEFORE initializing mode ---
   signalStatus = document.createElement('div');
   signalStatus.id = 'signal-status';
   signalStatus.style.marginTop = '8px';
@@ -546,48 +636,77 @@ const create3DEnvironment = () => {
   simBrakeBtn.textContent = 'Sim Brake Release';
   simBrakeBtn.style.marginTop = '6px';
   cameraInfo.appendChild(simBrakeBtn);
+  
+  // Define handleParkingBrake function and lastParkingBrake tracker
+  // Initialize to 1 (engaged) since we start in Home mode
+  let lastParkingBrake = 1;
+  function handleParkingBrake(value) {
+    const val = Number(value) ? 1 : 0;
+    // Update UI/state immediately
+    updateParkBrakeUI(val);
+
+    // detect edges - now also works on first call since lastParkingBrake is initialized
+    if (lastParkingBrake === 1 && val === 0) {
+      // 1 -> 0 : released => Drive
+      if (cameraPresets['Drive']) {
+        setCurrentMode('Drive');
+        goToPreset('Drive', 1200);
+        showToast('park_brake released — entering Drive view');
+      } else {
+        showToast('park_brake released — Drive preset not found');
+      }
+    } else if (lastParkingBrake === 0 && val === 1) {
+      // 0 -> 1 : engaged => Home
+      if (cameraPresets['Home']) {
+        setCurrentMode('Home');
+        goToPreset('Home', 1200);
+        showToast('park_brake engaged — entering Home view');
+      } else {
+        showToast('park_brake engaged — Home preset not found');
+      }
+    }
+    lastParkingBrake = val;
+  }
+  
   simBrakeBtn.addEventListener('click', () => {
     // toggle simulated brake state
     const nextVal = park_brake === 1 ? 0 : 1;
     handleParkingBrake(nextVal);
   });
 
-  let lastParkingBrake = null;
-  function handleParkingBrake(value) {
-    const val = Number(value) ? 1 : 0;
-    // Update UI/state immediately
-    updateParkBrakeUI(val);
-
-    // detect edges
-    if (lastParkingBrake !== null) {
-      if (lastParkingBrake === 1 && val === 0) {
-        // 1 -> 0 : released => Drive
-        if (cameraPresets['Drive']) {
-          setCurrentMode('Drive');
-          goToPreset('Drive', 1200);
-          showToast('park_brake released — entering Drive view');
-        } else {
-          showToast('park_brake released — Drive preset not found');
-        }
-      } else if (lastParkingBrake === 0 && val === 1) {
-        // 0 -> 1 : engaged => Home
-        if (cameraPresets['Home']) {
-          setCurrentMode('Home');
-          goToPreset('Home', 1200);
-          showToast('park_brake engaged — entering Home view');
-        } else {
-          showToast('park_brake engaged — Home preset not found');
-        }
-      }
-    }
-    lastParkingBrake = val;
+  // ALWAYS initialize to Home mode on page load (refresh)
+  // This ensures consistent starting position regardless of previous state
+  if (cameraPresets['Home']) {
+    setCurrentMode('Home');
+    // Immediately set camera to Home position without animation
+    const homePreset = cameraPresets['Home'];
+    camera.position.set(homePreset.position[0], homePreset.position[1], homePreset.position[2]);
+    controls.target.set(homePreset.target[0], homePreset.target[1], homePreset.target[2]);
+    controls.update();
+    console.log('Initialized to Home mode on page load');
+  } else if (cameraPresets['Drive']) {
+    setCurrentMode('Drive');
   }
+
+  // Convenience API: parent project can directly set parking brake state
+  window.setParkingBrakeState = function(val) {
+    handleParkingBrake(val);
+  };
+
+  // Convenience API: parent project can directly set speed
+  window.setCarSpeed = function(kmh) {
+    updateSpeed(kmh);
+  };
 
   window.receiveVehicleSignal = function(signalName, value) {
     if (!signalName) return;
     const n = signalName.toLowerCase();
     if (n.includes('park')) {
       handleParkingBrake(value);
+    } else if (n.includes('speed') || n.includes('velocity')) {
+      // Handle speed signals (expecting MPH, clamped at 75)
+      updateSpeed(value);
+      showToast(`Speed: ${currentSpeed.toFixed(0)} mph`);
     } else {
       showToast(`${signalName}: ${value}`);
     }
@@ -600,7 +719,24 @@ const create3DEnvironment = () => {
     listPresets: () => Object.keys(cameraPresets),
     goToPreset: goToPreset,
     animateTo: animateCameraTo,
-    receiveVehicleSignal: window.receiveVehicleSignal
+    receiveVehicleSignal: window.receiveVehicleSignal,
+    setDayMode: (isDay) => {
+      isDayMode = !!isDay;
+      if (dayNightBtn) dayNightBtn.textContent = isDayMode ? 'Day Mode' : 'Night Mode';
+      updateEnvironmentLighting();
+    },
+    getDayMode: () => isDayMode,
+    toggleDayNight: () => {
+      isDayMode = !isDayMode;
+      if (dayNightBtn) dayNightBtn.textContent = isDayMode ? 'Day Mode' : 'Night Mode';
+      updateEnvironmentLighting();
+      return isDayMode;
+    },
+    setSpeed: (kmh) => {
+      updateSpeed(kmh);
+    },
+    getSpeed: () => currentSpeed,
+    getAnimationSpeed: () => roadSpeed
   };
 
   // Variables for the car and wheels
@@ -708,10 +844,40 @@ const create3DEnvironment = () => {
   const animate = () => {
     requestAnimationFrame(animate);
 
-    // Rotate wheels automatically
+    // Rotate wheels based on speed (base rotation even when stopped)
+    const baseWheelSpeed = 0.05;
     wheels.forEach(wheel => {
-      wheel.rotation.x += 0.05; // Adjust speed as needed
+      wheel.rotation.x += baseWheelSpeed;
     });
+
+    // Animate road and environment in Drive mode
+    if (isDriving && roadSpeed > 0) {
+      roadOffset += roadSpeed;
+      
+      // Animate lane markings moving toward the car (negative z)
+      laneMarkings.forEach(lane => {
+        lane.position.z -= roadSpeed;
+        // Reset position when lane marking goes too far behind
+        if (lane.position.z < -50) {
+          lane.position.z += 100;
+        }
+      });
+      
+      // Animate environment objects (trees) moving toward the car (negative z)
+      environmentObjects.forEach(obj => {
+        obj.position.z -= roadSpeed;
+        // Reset position when object goes too far behind
+        if (obj.position.z < -50) {
+          obj.position.z += 200;
+        }
+      });
+      
+      // Make wheels spin faster based on speed (proportional to roadSpeed)
+      const extraWheelSpeed = roadSpeed * 0.33; // Scale wheel rotation to speed
+      wheels.forEach(wheel => {
+        wheel.rotation.x += extraWheelSpeed;
+      });
+    }
 
     // Update controls
     controls.update();
