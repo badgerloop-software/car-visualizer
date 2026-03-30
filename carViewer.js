@@ -54,6 +54,18 @@ const create3DEnvironment = () => {
   rimLight.penumbra = 0.5;
   scene.add(rimLight);
 
+  // Extra key light from right-above to brighten top surfaces in showroom mode
+  const topRightLight = new THREE.SpotLight(0xffffff, 1.1);
+  topRightLight.position.set(2.8, 10, 0.8);
+  topRightLight.angle = Math.PI / 4;
+  topRightLight.penumbra = 0.35;
+  topRightLight.decay = 2;
+  topRightLight.distance = 35;
+  topRightLight.castShadow = true;
+  topRightLight.shadow.mapSize.width = 1024;
+  topRightLight.shadow.mapSize.height = 1024;
+  scene.add(topRightLight);
+
   // Add a lighter ground plane (showroom floor)
   const groundGeometry = new THREE.PlaneGeometry(50, 50);
   const groundMaterial = new THREE.MeshStandardMaterial({ 
@@ -129,8 +141,14 @@ const create3DEnvironment = () => {
   let roadSpeed = 0; // Actual animation speed (calculated from currentSpeed)
   let isDayMode = true; // Day/night mode toggle
 
+  // Resolve controls constructor across different global script builds.
+  const OrbitControlsCtor = THREE.OrbitControls || window.OrbitControls;
+  if (!OrbitControlsCtor) {
+    throw new Error('OrbitControls failed to load. Check index.html script URLs.');
+  }
+
   // Add OrbitControls for mouse interaction
-  const controls = new THREE.OrbitControls(camera, renderer.domElement);
+  const controls = new OrbitControlsCtor(camera, renderer.domElement);
   controls.enableDamping = true;
   controls.dampingFactor = 0.05;
   controls.minDistance = 2;
@@ -447,6 +465,7 @@ const create3DEnvironment = () => {
     spotLight1.visible = true;
     spotLight2.visible = true;
     rimLight.visible = true;
+    topRightLight.visible = true;
     ambientLight.intensity = 0.2;
     
     // Dark showroom background
@@ -469,6 +488,7 @@ const create3DEnvironment = () => {
     spotLight1.visible = false;
     spotLight2.visible = false;
     rimLight.visible = false;
+    topRightLight.visible = false;
     
     // Apply day/night lighting
     if (isDayMode) {
@@ -745,7 +765,11 @@ const create3DEnvironment = () => {
 
   // Load a car model from the internet
   // Using a free GLTF model from Sketchfab or similar sources
-  const loader = new THREE.GLTFLoader();
+  const GLTFLoaderCtor = THREE.GLTFLoader || window.GLTFLoader;
+  if (!GLTFLoaderCtor) {
+    throw new Error('GLTFLoader failed to load. Check index.html script URLs.');
+  }
+  const loader = new GLTFLoaderCtor();
   
   // For demonstration, let's create a simple car with rotating wheels
   // You can replace this with a real GLTF model URL
@@ -797,9 +821,10 @@ const create3DEnvironment = () => {
     scene.add(car);
   }
 
-  // Load the local Ferrari F40 GLTF model
+  // Load the local Sunburst body GLB model
+  const modelUrl = `sunburst-body/sunburst-body.glb?v=${Date.now()}`;
   loader.load(
-    'ferrari_f40/scene.gltf', // Local model path
+    modelUrl, // Local model path (cache-busted)
     (gltf) => {
       console.log('✅ Model loaded successfully!', gltf);
       
@@ -810,13 +835,131 @@ const create3DEnvironment = () => {
       }
       
       car = gltf.scene;
-      car.scale.set(1, 1, 1); // Adjust scale as needed
-      car.position.y = -0.5; // Position on the ground
+
+      // Normalize model size/position so different assets still appear in-frame.
+      const bbox = new THREE.Box3().setFromObject(car);
+      const size = bbox.getSize(new THREE.Vector3());
+      const center = bbox.getCenter(new THREE.Vector3());
+      const maxDim = Math.max(size.x, size.y, size.z);
+      const targetSize = 6.5;
+      const scale = maxDim > 0 ? targetSize / maxDim : 1;
+      car.scale.setScalar(scale);
+
+      // Recompute bounds after scaling, then center on X/Z and sit on ground.
+      const scaledBox = new THREE.Box3().setFromObject(car);
+      const scaledCenter = scaledBox.getCenter(new THREE.Vector3());
+      const groundY = -0.5;
+      car.position.set(-scaledCenter.x, groundY - scaledBox.min.y, -scaledCenter.z);
+      car.rotation.y = Math.PI;
       
       car.traverse((node) => {
         if (node.isMesh) {
+          const nodeName = (node.name || '').toLowerCase();
+
+          // Some exports include helper/grid meshes that overlap the body and cause moire artifacts.
+          if (nodeName.includes('grid')) {
+            node.visible = false;
+            console.log('Hid helper mesh:', node.name || '(unnamed mesh)');
+            return;
+          }
+
           node.castShadow = true;
-          node.receiveShadow = true;
+          // Avoid heavy self-shadow acne/striping on curved body panels.
+          node.receiveShadow = false;
+
+          const sourceMaterials = Array.isArray(node.material) ? node.material : [node.material];
+          const adjustedMaterials = sourceMaterials.map((srcMat) => {
+            if (!srcMat) return srcMat;
+            const mat = srcMat.clone();
+            const matName = (mat.name || '').toLowerCase();
+
+            // Make glass meshes clearly visible with alpha blending.
+            const isGlass = nodeName.includes('glass') || nodeName.includes('windshield') || matName.includes('glass') || matName.includes('windshield');
+            if (isGlass) {
+              mat.transparent = true;
+              mat.opacity = 0.55;
+              mat.alphaTest = 0.0;
+              mat.depthWrite = false;
+              mat.side = THREE.DoubleSide;
+              if (mat.color && mat.color.setRGB) {
+                mat.color.setRGB(0.75, 0.88, 1.0);
+              }
+              if (typeof mat.transmission === 'number') {
+                mat.transmission = 0.7;
+              }
+              if (typeof mat.roughness === 'number') {
+                mat.roughness = 0.1;
+              }
+              if (typeof mat.metalness === 'number') {
+                mat.metalness = 0.0;
+              }
+
+              // Glass should not cast hard shadows.
+              node.castShadow = false;
+              console.log('Adjusted glass material:', node.name || '(unnamed mesh)');
+            }
+
+            // Improve solar panel tile readability (reduce z-fighting + texture blur).
+            const isSolar = nodeName.includes('solar') || matName.includes('solar') || matName.includes('cell');
+            if (isSolar) {
+              // Keep solar surfaces stable and readable.
+              mat.transparent = false;
+              mat.opacity = 1.0;
+              mat.depthWrite = true;
+              mat.depthTest = true;
+              mat.side = THREE.FrontSide;
+              mat.color = new THREE.Color(0xffffff);
+
+              // Slight depth bias helps when solar skin is close to body geometry.
+              mat.polygonOffset = true;
+              mat.polygonOffsetFactor = -0.5;
+              mat.polygonOffsetUnits = -0.5;
+
+              if (typeof mat.roughness === 'number') {
+                mat.roughness = 0.45;
+              }
+              if (typeof mat.metalness === 'number') {
+                mat.metalness = 0.0;
+              }
+              if (mat.map) {
+                const maxAniso = renderer.capabilities.getMaxAnisotropy ? renderer.capabilities.getMaxAnisotropy() : 1;
+                mat.map.anisotropy = Math.max(1, Math.min(8, maxAniso));
+                if ('encoding' in mat.map) {
+                  mat.map.encoding = THREE.sRGBEncoding;
+                }
+                if (typeof mat.emissive !== 'undefined') {
+                  mat.emissive = new THREE.Color(0x151515);
+                  mat.emissiveMap = mat.map;
+                }
+                mat.map.needsUpdate = true;
+              }
+              node.renderOrder = 2;
+              console.log('Adjusted solar panel material:', node.name || '(unnamed mesh)');
+            }
+
+            // Brighten aeroshell/body side surfaces so white accents are visible in showroom lighting.
+            const isBodySide = matName.includes('aeroshell_body') || (nodeName.includes('aeroshell') && !isSolar);
+            if (isBodySide) {
+              if (mat.color && mat.color.setRGB) {
+                mat.color.setRGB(0.9, 0.9, 0.92);
+              }
+              if (typeof mat.roughness === 'number') {
+                mat.roughness = 0.35;
+              }
+              if (typeof mat.metalness === 'number') {
+                mat.metalness = 0.0;
+              }
+              if (typeof mat.emissive !== 'undefined') {
+                mat.emissive = new THREE.Color(0x0f0f10);
+              }
+              console.log('Brightened body-side material:', node.name || '(unnamed mesh)');
+            }
+
+            mat.needsUpdate = true;
+            return mat;
+          });
+
+          node.material = Array.isArray(node.material) ? adjustedMaterials : adjustedMaterials[0];
         }
         // Find wheels by name (depends on the model structure)
         const nodeName = node.name.toLowerCase();
@@ -835,6 +978,12 @@ const create3DEnvironment = () => {
     },
     (error) => {
       console.error('❌ Error loading model:', error);
+      if (window.location.protocol === 'file:') {
+        console.error('GLB/GLTF assets must be served over HTTP. Open via a local server, not file://');
+        showToast('Model load failed: use http://127.0.0.1:8000 (not file://)');
+      } else {
+        showToast('Model load failed, using fallback car');
+      }
       console.log('Falling back to simple car...');
       createSimpleCar();
     }
