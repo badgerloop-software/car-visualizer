@@ -1,6 +1,9 @@
 # car-visualizer
 
-A small demo that shows a 3D car viewer using three.js and a GLTF model (Ferrari F40).
+A small demo that shows a 3D car viewer using three.js. It loads the team's
+own Sunburst solar-car body model (`sunburst-body/sunburst-body.glb`) and, if
+the model fails to load, falls back to a simple primitive-built car so the
+viewer never goes blank.
 
 ## Screenshots
 
@@ -119,10 +122,12 @@ Implementation notes
 
 Troubleshooting
 
-- Black screen: check DevTools console for errors and verify `ferrari_f40/scene.gltf` is present. If model fails to load a simple fallback car will be created.
+- Black screen: check DevTools console for errors and verify `sunburst-body/sunburst-body.glb` is present. If the model fails to load, a simple fallback car will be created automatically.
 - Keys not registering: click the render canvas to give it focus, then press keys.
 - Copy to clipboard: uses the modern Clipboard API, with a textarea fallback if necessary.
 
 License / Model credit
 
-This work uses the Ferrari F40 model by Black Snow on Sketchfab, licensed under CC-BY-4.0. See `ferrari_f40/license.txt` for details.
+The Sunburst solar-car body model in `sunburst-body/` is an original work by
+Badger Solar Racing. All rights reserved unless otherwise noted in that
+directory.
