@@ -15,12 +15,76 @@
         align-items: center;
         justify-content: center;
       }
+
+      #model-loading-overlay {
+        position: fixed;
+        inset: 0;
+        z-index: 20000;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 20px;
+        background: #1a1a1a;
+        color: #fff;
+        font-family: system-ui, sans-serif;
+        transition: opacity 0.35s ease;
+      }
+
+      #model-loading-overlay.is-hidden {
+        opacity: 0;
+        pointer-events: none;
+      }
+
+      .loading-title {
+        font-size: 1.25rem;
+        font-weight: 600;
+        letter-spacing: 0.04em;
+      }
+
+      .loading-spinner {
+        width: 44px;
+        height: 44px;
+        border: 3px solid rgba(255, 255, 255, 0.15);
+        border-top-color: #fff;
+        border-radius: 50%;
+        animation: loading-spin 0.85s linear infinite;
+      }
+
+      @keyframes loading-spin {
+        to {
+          transform: rotate(360deg);
+        }
+      }
+
+      .loading-progress-track {
+        width: min(280px, 70vw);
+        height: 4px;
+        background: rgba(255, 255, 255, 0.12);
+        border-radius: 2px;
+        overflow: hidden;
+      }
+
+      .loading-progress-bar {
+        height: 100%;
+        width: 0%;
+        background: #fff;
+        border-radius: 2px;
+        transition: width 0.15s ease;
+      }
+
+      .loading-percent {
+        font-size: 0.85rem;
+        opacity: 0.7;
+        font-variant-numeric: tabular-nums;
+      }
     </style>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/DRACOLoader.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/GLTFLoader.js"></script>
     <script src="carViewer.js" defer></script>
-    <title>3D Car Model with Three.js</title>
+    <title>Sunburst Visualizer</title>
   </head>
 
   <body></body>

@@ -192,6 +192,7 @@ const create3DEnvironment = () => {
     <div style="margin-top:6px;">
       <button id="btn-copy" title="Copy camera state">Copy</button>
       <button id="btn-day-night" title="Toggle Day/Night Mode">Day Mode</button>
+      <button id="btn-recenter-panel" title="Return to default view for current mode">Recenter</button>
     </div>
     <div style="margin-top:6px;font-size:10px;opacity:0.8">Tip: press 'I' to toggle this panel</div>
   `;
@@ -208,6 +209,7 @@ const create3DEnvironment = () => {
   const camAnglesEl = cameraInfo.querySelector('#cam-angles');
   const copyBtn = cameraInfo.querySelector('#btn-copy');
   const dayNightBtn = cameraInfo.querySelector('#btn-day-night');
+  const recenterPanelBtn = cameraInfo.querySelector('#btn-recenter-panel');
   const speedSlider = cameraInfo.querySelector('#speed-slider');
   const speedDisplay = cameraInfo.querySelector('#speed-display');
 
@@ -422,7 +424,7 @@ const create3DEnvironment = () => {
   let park_brake = null; // 0 or 1
   let userInteracting = false;
   let revertTimer = null;
-  const REVERT_DELAY = 1000; // ms
+  const REVERT_DELAY = 10000; // ms — auto-revert after user stops orbiting
   const MIN_CAMERA_Y = ground.position.y + 0.01; // world y floor limit - do not allow camera below this
   let iKeyHandled = false;
 
@@ -448,7 +450,8 @@ const create3DEnvironment = () => {
     } else if (park_brake === null) {
       updateParkBrakeUI(0);
     }
-    if (revertTimer) { clearTimeout(revertTimer); revertTimer = null; }
+    clearRevertCountdown();
+    setRecenterVisible(false);
   }
 
   // Switch to showroom mode (spotlights, static environment)
@@ -502,6 +505,88 @@ const create3DEnvironment = () => {
     }
   }
 
+  // Floating recenter button (shown after the user moves the camera)
+  const recenterBtn = document.createElement('button');
+  recenterBtn.id = 'btn-recenter';
+  recenterBtn.textContent = 'Recenter View';
+  recenterBtn.title = 'Return to default view for current mode';
+  Object.assign(recenterBtn.style, {
+    position: 'fixed',
+    top: '12px',
+    left: '50%',
+    transform: 'translateX(-50%)',
+    padding: '8px 14px',
+    background: 'rgba(0,0,0,0.8)',
+    color: '#fff',
+    border: '1px solid rgba(255,255,255,0.25)',
+    borderRadius: '6px',
+    fontFamily: 'sans-serif',
+    fontSize: '13px',
+    cursor: 'pointer',
+    zIndex: 10000,
+    display: 'none',
+  });
+  document.body.appendChild(recenterBtn);
+
+  let revertDeadline = null; // performance.now() when auto-revert fires
+
+  function setRecenterVisible(visible) {
+    recenterBtn.style.display = visible ? 'block' : 'none';
+    if (recenterPanelBtn) recenterPanelBtn.style.display = visible ? 'inline-block' : 'none';
+    if (!visible) updateRecenterCountdown();
+  }
+
+  function updateRecenterCountdown() {
+    let floatingLabel = 'Recenter View';
+    let panelLabel = 'Recenter';
+    if (revertDeadline != null && !userInteracting) {
+      const secondsLeft = Math.max(0, Math.ceil((revertDeadline - performance.now()) / 1000));
+      floatingLabel = `Recenter View (${secondsLeft}s)`;
+      panelLabel = `Recenter (${secondsLeft}s)`;
+    }
+    recenterBtn.textContent = floatingLabel;
+    if (recenterPanelBtn) recenterPanelBtn.textContent = panelLabel;
+  }
+
+  function clearRevertCountdown() {
+    if (revertTimer) {
+      clearTimeout(revertTimer);
+      revertTimer = null;
+    }
+    revertDeadline = null;
+    updateRecenterCountdown();
+  }
+
+  function startRevertCountdown() {
+    clearRevertCountdown();
+    revertDeadline = performance.now() + REVERT_DELAY;
+    updateRecenterCountdown();
+    revertTimer = setTimeout(() => {
+      revertDeadline = null;
+      if (!userInteracting && currentMode && cameraPresets[currentMode]) {
+        goToPreset(currentMode, 800);
+        showToast(`Reverting to ${currentMode} view`);
+        setRecenterVisible(false);
+      }
+    }, REVERT_DELAY);
+  }
+
+  function recenterView() {
+    clearRevertCountdown();
+    const mode = currentMode || 'Home';
+    if (cameraPresets[mode]) {
+      goToPreset(mode, 800);
+      showToast(`Recentered to ${mode} view`);
+    } else {
+      showToast('No preset for current mode');
+    }
+    setRecenterVisible(false);
+  }
+
+  recenterBtn.addEventListener('click', recenterView);
+  if (recenterPanelBtn) recenterPanelBtn.addEventListener('click', recenterView);
+  setRecenterVisible(false);
+
   // Prevent looking under the floor and auto-revert after interactions
   controls.minPolarAngle = 0;
   controls.maxPolarAngle = Math.PI / 2 - 0.0001; // disallow going below the horizontal plane
@@ -509,18 +594,18 @@ const create3DEnvironment = () => {
   controls.addEventListener('start', () => {
     userInteracting = true;
     if (cameraTweenCancel) cameraTweenCancel();
-    if (revertTimer) { clearTimeout(revertTimer); revertTimer = null; }
+    clearRevertCountdown();
+    if (currentMode && cameraPresets[currentMode]) {
+      setRecenterVisible(true);
+      updateRecenterCountdown();
+    }
   });
 
   controls.addEventListener('end', () => {
     userInteracting = false;
-    if (revertTimer) clearTimeout(revertTimer);
-    revertTimer = setTimeout(() => {
-      if (!userInteracting && currentMode && cameraPresets[currentMode]) {
-        goToPreset(currentMode, 800);
-        showToast(`Reverting to ${currentMode} view`);
-      }
-    }, REVERT_DELAY);
+    if (currentMode && cameraPresets[currentMode]) {
+      startRevertCountdown();
+    }
   });
 
   controls.addEventListener('change', () => {
@@ -770,12 +855,52 @@ const create3DEnvironment = () => {
     throw new Error('GLTFLoader failed to load. Check index.html script URLs.');
   }
   const loader = new GLTFLoaderCtor();
-  
+
+  // Newer Blender exports may use Draco mesh compression (KHR_draco_mesh_compression).
+  const DRACOLoaderCtor = THREE.DRACOLoader || window.DRACOLoader;
+  if (DRACOLoaderCtor) {
+    const dracoLoader = new DRACOLoaderCtor();
+    dracoLoader.setDecoderPath('https://www.gstatic.com/draco/versioned/decoders/1.4.1/');
+    loader.setDRACOLoader(dracoLoader);
+  } else {
+    console.warn('DRACOLoader not available; Draco-compressed GLBs will fail to load.');
+  }
+
   // For demonstration, let's create a simple car with rotating wheels
   // You can replace this with a real GLTF model URL
   // createSimpleCar(); // Commented out - only use if GLTF fails
 
   console.log('Attempting to load GLTF car model...');
+
+  const loadingOverlay = document.createElement('div');
+  loadingOverlay.id = 'model-loading-overlay';
+  loadingOverlay.innerHTML = `
+    <div class="loading-spinner" aria-hidden="true"></div>
+    <div class="loading-title">Loading Sunburst…</div>
+    <div class="loading-progress-track" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+      <div class="loading-progress-bar"></div>
+    </div>
+    <div class="loading-percent">0%</div>
+  `;
+  document.body.appendChild(loadingOverlay);
+
+  const loadingProgressBar = loadingOverlay.querySelector('.loading-progress-bar');
+  const loadingProgressTrack = loadingOverlay.querySelector('.loading-progress-track');
+  const loadingPercentEl = loadingOverlay.querySelector('.loading-percent');
+
+  function updateModelLoadingProgress(percent) {
+    const clamped = Math.min(100, Math.max(0, percent));
+    loadingProgressBar.style.width = `${clamped}%`;
+    loadingProgressTrack.setAttribute('aria-valuenow', String(Math.round(clamped)));
+    loadingPercentEl.textContent = `${Math.round(clamped)}%`;
+  }
+
+  function hideModelLoading() {
+    loadingOverlay.classList.add('is-hidden');
+    setTimeout(() => {
+      loadingOverlay.remove();
+    }, 400);
+  }
 
   function createSimpleCar() {
     // Car body
@@ -834,23 +959,28 @@ const create3DEnvironment = () => {
         wheels = [];
       }
       
-      car = gltf.scene;
+      const model = gltf.scene;
+      const carGroup = new THREE.Group();
 
       // Normalize model size/position so different assets still appear in-frame.
-      const bbox = new THREE.Box3().setFromObject(car);
+      const bbox = new THREE.Box3().setFromObject(model);
       const size = bbox.getSize(new THREE.Vector3());
-      const center = bbox.getCenter(new THREE.Vector3());
       const maxDim = Math.max(size.x, size.y, size.z);
       const targetSize = 6.5;
       const scale = maxDim > 0 ? targetSize / maxDim : 1;
-      car.scale.setScalar(scale);
+      model.scale.setScalar(scale);
 
-      // Recompute bounds after scaling, then center on X/Z and sit on ground.
-      const scaledBox = new THREE.Box3().setFromObject(car);
+      // Center geometry on the group origin, then sit the bottom on the ground plane.
+      const scaledBox = new THREE.Box3().setFromObject(model);
       const scaledCenter = scaledBox.getCenter(new THREE.Vector3());
+      model.position.sub(scaledCenter);
+      const groundedBox = new THREE.Box3().setFromObject(model);
       const groundY = -0.5;
-      car.position.set(-scaledCenter.x, groundY - scaledBox.min.y, -scaledCenter.z);
-      car.rotation.y = Math.PI;
+      model.position.y += groundY - groundedBox.min.y;
+
+      carGroup.add(model);
+      carGroup.rotation.y = 0;
+      car = carGroup;
       
       car.traverse((node) => {
         if (node.isMesh) {
@@ -870,12 +1000,17 @@ const create3DEnvironment = () => {
           const sourceMaterials = Array.isArray(node.material) ? node.material : [node.material];
           const adjustedMaterials = sourceMaterials.map((srcMat) => {
             if (!srcMat) return srcMat;
-            const mat = srcMat.clone();
-            const matName = (mat.name || '').toLowerCase();
+            const matName = (srcMat.name || '').toLowerCase();
+            // Classify by material name only — the combined mesh is named
+            // "Aeroshell and Windshield Model_v3", so node-name checks would
+            // mis-tag solar/body/wheels as glass.
+            const isGlass = matName.includes('glass') || matName.includes('windshield');
+            const isSolar = matName.includes('solar') || matName.includes('cell');
+            const isWrap = matName.includes('wrap');
+            const isBodySide = matName.includes('aeroshell_body');
 
-            // Make glass meshes clearly visible with alpha blending.
-            const isGlass = nodeName.includes('glass') || nodeName.includes('windshield') || matName.includes('glass') || matName.includes('windshield');
             if (isGlass) {
+              const mat = srcMat.clone();
               mat.transparent = true;
               mat.opacity = 0.55;
               mat.alphaTest = 0.0;
@@ -894,15 +1029,32 @@ const create3DEnvironment = () => {
                 mat.metalness = 0.0;
               }
 
-              // Glass should not cast hard shadows.
               node.castShadow = false;
-              console.log('Adjusted glass material:', node.name || '(unnamed mesh)');
+              node.renderOrder = 3;
+              mat.needsUpdate = true;
+              return mat;
             }
 
-            // Improve solar panel tile readability (reduce z-fighting + texture blur).
-            const isSolar = nodeName.includes('solar') || matName.includes('solar') || matName.includes('cell');
+            if (isBodySide) {
+              node.renderOrder = 0;
+              return new THREE.MeshStandardMaterial({
+                color: new THREE.Color(0xffffff),
+                roughness: 0.35,
+                metalness: 0.0,
+                emissive: new THREE.Color(0x1a1a1a),
+                // DoubleSide so side panels stay visible through wrap cutouts
+                // even when exported normals face inward.
+                side: THREE.DoubleSide,
+                transparent: false,
+                opacity: 1.0,
+                depthWrite: true,
+                depthTest: true,
+              });
+            }
+
+            const mat = srcMat.clone();
+
             if (isSolar) {
-              // Keep solar surfaces stable and readable.
               mat.transparent = false;
               mat.opacity = 1.0;
               mat.depthWrite = true;
@@ -910,7 +1062,6 @@ const create3DEnvironment = () => {
               mat.side = THREE.FrontSide;
               mat.color = new THREE.Color(0xffffff);
 
-              // Slight depth bias helps when solar skin is close to body geometry.
               mat.polygonOffset = true;
               mat.polygonOffsetFactor = -0.5;
               mat.polygonOffsetUnits = -0.5;
@@ -934,25 +1085,31 @@ const create3DEnvironment = () => {
                 mat.map.needsUpdate = true;
               }
               node.renderOrder = 2;
-              console.log('Adjusted solar panel material:', node.name || '(unnamed mesh)');
-            }
-
-            // Brighten aeroshell/body side surfaces so white accents are visible in showroom lighting.
-            const isBodySide = matName.includes('aeroshell_body') || (nodeName.includes('aeroshell') && !isSolar);
-            if (isBodySide) {
-              if (mat.color && mat.color.setRGB) {
-                mat.color.setRGB(0.9, 0.9, 0.92);
+            } else if (isWrap) {
+              // Wrap PNGs have large alpha cutouts; use alphaTest instead of blending.
+              mat.transparent = true;
+              mat.opacity = 1.0;
+              mat.alphaTest = 0.45;
+              mat.depthWrite = true;
+              mat.depthTest = true;
+              mat.side = THREE.DoubleSide;
+              mat.polygonOffset = true;
+              mat.polygonOffsetFactor = -1;
+              mat.polygonOffsetUnits = -1;
+              if (typeof mat.transmission === 'number') {
+                mat.transmission = 0;
               }
-              if (typeof mat.roughness === 'number') {
-                mat.roughness = 0.35;
+              node.renderOrder = 1;
+            } else {
+              mat.transparent = false;
+              mat.opacity = 1.0;
+              mat.alphaTest = 0;
+              mat.depthWrite = true;
+              mat.depthTest = true;
+              mat.side = THREE.FrontSide;
+              if (typeof mat.transmission === 'number') {
+                mat.transmission = 0;
               }
-              if (typeof mat.metalness === 'number') {
-                mat.metalness = 0.0;
-              }
-              if (typeof mat.emissive !== 'undefined') {
-                mat.emissive = new THREE.Color(0x0f0f10);
-              }
-              console.log('Brightened body-side material:', node.name || '(unnamed mesh)');
             }
 
             mat.needsUpdate = true;
@@ -971,27 +1128,226 @@ const create3DEnvironment = () => {
       scene.add(car);
       console.log('Car added to scene. Total wheels found:', wheels.length);
       console.log('Model structure:', gltf.scene);
+      hideModelLoading();
     },
     (progress) => {
-      const percent = (progress.loaded / progress.total * 100).toFixed(2);
-      console.log('Loading model: ' + percent + '%');
+      if (progress.total > 0) {
+        const percent = (progress.loaded / progress.total) * 100;
+        updateModelLoadingProgress(percent);
+        console.log('Loading model: ' + percent.toFixed(2) + '%');
+      }
     },
     (error) => {
       console.error('❌ Error loading model:', error);
       if (window.location.protocol === 'file:') {
         console.error('GLB/GLTF assets must be served over HTTP. Open via a local server, not file://');
-        showToast('Model load failed: use http://127.0.0.1:8000 (not file://)');
+        showToast('Model load failed: use http://127.0.0.1:8080 (not file://)');
       } else {
         showToast('Model load failed, using fallback car');
       }
       console.log('Falling back to simple car...');
       createSimpleCar();
+      hideModelLoading();
     }
   );
+
+  // ---------------------------------------------------------------------------
+  // Dynamic FPS optimization system
+  // ---------------------------------------------------------------------------
+
+  // Quality levels: index 0 = highest, 4 = lowest.
+  // Each level is applied when rolling-average FPS drops below its threshold.
+  const QUALITY_LEVELS = [
+    { pixelRatio: Math.min(window.devicePixelRatio, 2), shadowMapSize: 2048, shadows: true,  envObjects: true  }, // 0 – full
+    { pixelRatio: 1.5,                                  shadowMapSize: 1024, shadows: true,  envObjects: true  }, // 1 – high
+    { pixelRatio: 1.0,                                  shadowMapSize: 512,  shadows: true,  envObjects: false }, // 2 – medium
+    { pixelRatio: 1.0,                                  shadowMapSize: 256,  shadows: true,  envObjects: false }, // 3 – low
+    { pixelRatio: 0.75,                                 shadowMapSize: 256,  shadows: false, envObjects: false }, // 4 – emergency
+  ];
+
+  // FPS thresholds for stepping down / up
+  const FPS_DROP_THRESHOLD  = [0, 45, 30, 20, 0];   // step DOWN when avg fps < this (index = current level)
+  const FPS_RISE_THRESHOLD  = [Infinity, 55, 45, 30, 20]; // step UP when avg fps > this (index = current level)
+
+  // Hysteresis: require sustained bad/good fps before changing level
+  const DOWN_HOLD_MS = 1000;  // 1 s of bad fps → step down
+  const UP_HOLD_MS   = 3000;  // 3 s of good fps → step up (slower to restore)
+
+  // Shadow-casting lights whose map size must be updated on quality change
+  const shadowLights = [spotLight1, spotLight2, topRightLight];
+
+  // ---------------------------------------------------------------------------
+  // Hardware probe — estimate a good starting quality level so we don't open
+  // on full quality on a weak device and wait for the FPS sampler to catch up.
+  // ---------------------------------------------------------------------------
+  function probeHardwareQuality() {
+    let score = 0; // higher = better hardware
+
+    // GPU renderer string
+    try {
+      const gl = renderer.getContext();
+      const dbg = gl.getExtension('WEBGL_debug_renderer_info');
+      if (dbg) {
+        const gpuStr = (gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) || '').toLowerCase();
+        console.log('[perf] GPU renderer:', gpuStr);
+        if (/nvidia|geforce|rtx|gtx|quadro/.test(gpuStr))        score += 3; // discrete NVIDIA
+        else if (/radeon|rx\s*\d|vega|navi/.test(gpuStr))        score += 3; // discrete AMD
+        else if (/arc\s*[a-z]?\d/.test(gpuStr))                  score += 2; // Intel Arc discrete
+        else if (/intel/.test(gpuStr))                            score += 1; // integrated Intel
+        else if (/apple/.test(gpuStr))                            score += 2; // Apple Silicon iGPU (capable)
+        else                                                      score += 1; // unknown / software
+      }
+    } catch (e) { score += 1; }
+
+    // Device RAM (navigator.deviceMemory: 0.25 | 0.5 | 1 | 2 | 4 | 8 GB, Chrome/Edge only)
+    const mem = navigator.deviceMemory;
+    if      (mem >= 8)  score += 3;
+    else if (mem >= 4)  score += 2;
+    else if (mem >= 2)  score += 1;
+    else if (mem)       score += 0; // ≤ 1 GB
+    else                score += 1; // not reported (Firefox etc.) — neutral
+
+    // Logical CPU cores
+    const cores = navigator.hardwareConcurrency || 0;
+    if      (cores >= 12) score += 2;
+    else if (cores >= 6)  score += 1;
+
+    // Total pixel load (width × height × dpr²) — high-DPI 4K is expensive
+    const pixels = screen.width * screen.height * Math.pow(window.devicePixelRatio || 1, 2);
+    if      (pixels < 1_000_000)  score += 2; // ≤ 720p-ish
+    else if (pixels < 2_500_000)  score += 1; // 1080p area
+    // 4K+ → no bonus
+
+    console.log('[perf] Hardware score:', score);
+
+    // Map total score → starting quality level
+    if      (score >= 8) return 0; // full
+    else if (score >= 6) return 1; // high
+    else if (score >= 4) return 2; // medium
+    else if (score >= 2) return 3; // low
+    else                 return 4; // emergency
+  }
+
+  let qualityLevel = 0;
+  let downHoldMs   = 0;
+  let upHoldMs     = 0;
+
+  function applyQualityLevel(level) {
+    const q = QUALITY_LEVELS[level];
+    qualityLevel = level;
+
+    renderer.setPixelRatio(q.pixelRatio);
+    renderer.setSize(window.innerWidth, window.innerHeight);
+
+    renderer.shadowMap.enabled = q.shadows;
+    shadowLights.forEach(light => {
+      if (light.shadow) {
+        light.shadow.mapSize.set(q.shadowMapSize, q.shadowMapSize);
+        light.shadow.map = null; // force regeneration
+      }
+      light.castShadow = q.shadows;
+    });
+
+    if (car) {
+      car.traverse(node => {
+        if (node.isMesh) node.castShadow = q.shadows;
+      });
+    }
+
+    if (!q.envObjects) {
+      environmentObjects.forEach(obj => { obj.visible = false; });
+    } else if (isDriving) {
+      environmentObjects.forEach(obj => { obj.visible = true; });
+    }
+
+    updateFpsHud();
+  }
+
+  function adjustQuality(avgFps, dtMs) {
+    const drop = FPS_DROP_THRESHOLD[qualityLevel];
+    const rise = FPS_RISE_THRESHOLD[qualityLevel];
+
+    if (avgFps < drop) {
+      downHoldMs += dtMs;
+      upHoldMs = 0;
+      if (downHoldMs >= DOWN_HOLD_MS && qualityLevel < QUALITY_LEVELS.length - 1) {
+        downHoldMs = 0;
+        applyQualityLevel(qualityLevel + 1);
+      }
+    } else if (avgFps > rise) {
+      upHoldMs += dtMs;
+      downHoldMs = 0;
+      if (upHoldMs >= UP_HOLD_MS && qualityLevel > 0) {
+        upHoldMs = 0;
+        applyQualityLevel(qualityLevel - 1);
+      }
+    } else {
+      downHoldMs = 0;
+      upHoldMs = 0;
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // FPS / quality HUD badge
+  // ---------------------------------------------------------------------------
+  const QUALITY_LABELS = ['Full', 'High', 'Med', 'Low', 'Min'];
+
+  const fpsHud = document.createElement('div');
+  fpsHud.id = 'fps-hud';
+  Object.assign(fpsHud.style, {
+    position:   'fixed',
+    bottom:     '12px',
+    right:      '12px',
+    padding:    '5px 9px',
+    background: 'rgba(0,0,0,0.65)',
+    color:      '#fff',
+    fontFamily: 'monospace',
+    fontSize:   '12px',
+    borderRadius: '6px',
+    zIndex:     10000,
+    lineHeight: '1.5',
+    userSelect: 'none',
+    pointerEvents: 'none',
+  });
+  document.body.appendChild(fpsHud);
+
+  let hudFps = 0;
+  function updateFpsHud() {
+    const qLabel = QUALITY_LABELS[qualityLevel];
+    const color  = ['#4cff91','#a8ff4c','#ffe44c','#ff944c','#ff4c4c'][qualityLevel];
+    fpsHud.innerHTML =
+      `<span style="color:${color}">Q${qualityLevel} ${qLabel}</span>` +
+      ` &nbsp; ${hudFps.toFixed(0)} fps`;
+  }
+  updateFpsHud();
+
+  // ---------------------------------------------------------------------------
+  // FPS sampler state (declared outside animate so values persist across frames)
+  // ---------------------------------------------------------------------------
+  const FPS_WINDOW   = 60;   // rolling window in frames
+  const frameTimes   = [];
+  let   lastFrameTime = performance.now();
+
+  // Apply the initial quality level based on detected hardware.
+  applyQualityLevel(probeHardwareQuality());
 
   // Animation loop
   const animate = () => {
     requestAnimationFrame(animate);
+
+    // --- FPS sampling ---
+    const now = performance.now();
+    const dtMs = now - lastFrameTime;
+    lastFrameTime = now;
+    frameTimes.push(dtMs);
+    if (frameTimes.length > FPS_WINDOW) frameTimes.shift();
+
+    if (frameTimes.length >= 10) {
+      const avgMs = frameTimes.reduce((a, b) => a + b, 0) / frameTimes.length;
+      hudFps = 1000 / avgMs;
+      adjustQuality(hudFps, dtMs);
+      updateFpsHud();
+    }
 
     // Rotate wheels based on speed (base rotation even when stopped)
     const baseWheelSpeed = 0.05;
@@ -1022,7 +1378,7 @@ const create3DEnvironment = () => {
       });
       
       // Make wheels spin faster based on speed (proportional to roadSpeed)
-      const extraWheelSpeed = roadSpeed * 0.33; // Scale wheel rotation to speed
+      const extraWheelSpeed = roadSpeed * 0.33;
       wheels.forEach(wheel => {
         wheel.rotation.x += extraWheelSpeed;
       });
@@ -1033,6 +1389,8 @@ const create3DEnvironment = () => {
 
     // Update camera info if visible
     if (cameraInfoVisible) updateCameraInfo();
+
+    if (revertDeadline != null) updateRecenterCountdown();
 
     // Render the scene
     renderer.render(scene, camera);
