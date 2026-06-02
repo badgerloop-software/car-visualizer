@@ -770,7 +770,17 @@ const create3DEnvironment = () => {
     throw new Error('GLTFLoader failed to load. Check index.html script URLs.');
   }
   const loader = new GLTFLoaderCtor();
-  
+
+  // Newer Blender exports may use Draco mesh compression (KHR_draco_mesh_compression).
+  const DRACOLoaderCtor = THREE.DRACOLoader || window.DRACOLoader;
+  if (DRACOLoaderCtor) {
+    const dracoLoader = new DRACOLoaderCtor();
+    dracoLoader.setDecoderPath('https://www.gstatic.com/draco/versioned/decoders/1.4.1/');
+    loader.setDRACOLoader(dracoLoader);
+  } else {
+    console.warn('DRACOLoader not available; Draco-compressed GLBs will fail to load.');
+  }
+
   // For demonstration, let's create a simple car with rotating wheels
   // You can replace this with a real GLTF model URL
   // createSimpleCar(); // Commented out - only use if GLTF fails
@@ -834,23 +844,28 @@ const create3DEnvironment = () => {
         wheels = [];
       }
       
-      car = gltf.scene;
+      const model = gltf.scene;
+      const carGroup = new THREE.Group();
 
       // Normalize model size/position so different assets still appear in-frame.
-      const bbox = new THREE.Box3().setFromObject(car);
+      const bbox = new THREE.Box3().setFromObject(model);
       const size = bbox.getSize(new THREE.Vector3());
-      const center = bbox.getCenter(new THREE.Vector3());
       const maxDim = Math.max(size.x, size.y, size.z);
       const targetSize = 6.5;
       const scale = maxDim > 0 ? targetSize / maxDim : 1;
-      car.scale.setScalar(scale);
+      model.scale.setScalar(scale);
 
-      // Recompute bounds after scaling, then center on X/Z and sit on ground.
-      const scaledBox = new THREE.Box3().setFromObject(car);
+      // Center geometry on the group origin, then sit the bottom on the ground plane.
+      const scaledBox = new THREE.Box3().setFromObject(model);
       const scaledCenter = scaledBox.getCenter(new THREE.Vector3());
+      model.position.sub(scaledCenter);
+      const groundedBox = new THREE.Box3().setFromObject(model);
       const groundY = -0.5;
-      car.position.set(-scaledCenter.x, groundY - scaledBox.min.y, -scaledCenter.z);
-      car.rotation.y = Math.PI;
+      model.position.y += groundY - groundedBox.min.y;
+
+      carGroup.add(model);
+      carGroup.rotation.y = 0;
+      car = carGroup;
       
       car.traverse((node) => {
         if (node.isMesh) {
@@ -870,12 +885,17 @@ const create3DEnvironment = () => {
           const sourceMaterials = Array.isArray(node.material) ? node.material : [node.material];
           const adjustedMaterials = sourceMaterials.map((srcMat) => {
             if (!srcMat) return srcMat;
-            const mat = srcMat.clone();
-            const matName = (mat.name || '').toLowerCase();
+            const matName = (srcMat.name || '').toLowerCase();
+            // Classify by material name only — the combined mesh is named
+            // "Aeroshell and Windshield Model_v3", so node-name checks would
+            // mis-tag solar/body/wheels as glass.
+            const isGlass = matName.includes('glass') || matName.includes('windshield');
+            const isSolar = matName.includes('solar') || matName.includes('cell');
+            const isWrap = matName.includes('wrap');
+            const isBodySide = matName.includes('aeroshell_body');
 
-            // Make glass meshes clearly visible with alpha blending.
-            const isGlass = nodeName.includes('glass') || nodeName.includes('windshield') || matName.includes('glass') || matName.includes('windshield');
             if (isGlass) {
+              const mat = srcMat.clone();
               mat.transparent = true;
               mat.opacity = 0.55;
               mat.alphaTest = 0.0;
@@ -894,15 +914,32 @@ const create3DEnvironment = () => {
                 mat.metalness = 0.0;
               }
 
-              // Glass should not cast hard shadows.
               node.castShadow = false;
-              console.log('Adjusted glass material:', node.name || '(unnamed mesh)');
+              node.renderOrder = 3;
+              mat.needsUpdate = true;
+              return mat;
             }
 
-            // Improve solar panel tile readability (reduce z-fighting + texture blur).
-            const isSolar = nodeName.includes('solar') || matName.includes('solar') || matName.includes('cell');
+            if (isBodySide) {
+              node.renderOrder = 0;
+              return new THREE.MeshStandardMaterial({
+                color: new THREE.Color(0xffffff),
+                roughness: 0.35,
+                metalness: 0.0,
+                emissive: new THREE.Color(0x1a1a1a),
+                // DoubleSide so side panels stay visible through wrap cutouts
+                // even when exported normals face inward.
+                side: THREE.DoubleSide,
+                transparent: false,
+                opacity: 1.0,
+                depthWrite: true,
+                depthTest: true,
+              });
+            }
+
+            const mat = srcMat.clone();
+
             if (isSolar) {
-              // Keep solar surfaces stable and readable.
               mat.transparent = false;
               mat.opacity = 1.0;
               mat.depthWrite = true;
@@ -910,7 +947,6 @@ const create3DEnvironment = () => {
               mat.side = THREE.FrontSide;
               mat.color = new THREE.Color(0xffffff);
 
-              // Slight depth bias helps when solar skin is close to body geometry.
               mat.polygonOffset = true;
               mat.polygonOffsetFactor = -0.5;
               mat.polygonOffsetUnits = -0.5;
@@ -934,25 +970,31 @@ const create3DEnvironment = () => {
                 mat.map.needsUpdate = true;
               }
               node.renderOrder = 2;
-              console.log('Adjusted solar panel material:', node.name || '(unnamed mesh)');
-            }
-
-            // Brighten aeroshell/body side surfaces so white accents are visible in showroom lighting.
-            const isBodySide = matName.includes('aeroshell_body') || (nodeName.includes('aeroshell') && !isSolar);
-            if (isBodySide) {
-              if (mat.color && mat.color.setRGB) {
-                mat.color.setRGB(0.9, 0.9, 0.92);
+            } else if (isWrap) {
+              // Wrap PNGs have large alpha cutouts; use alphaTest instead of blending.
+              mat.transparent = true;
+              mat.opacity = 1.0;
+              mat.alphaTest = 0.45;
+              mat.depthWrite = true;
+              mat.depthTest = true;
+              mat.side = THREE.DoubleSide;
+              mat.polygonOffset = true;
+              mat.polygonOffsetFactor = -1;
+              mat.polygonOffsetUnits = -1;
+              if (typeof mat.transmission === 'number') {
+                mat.transmission = 0;
               }
-              if (typeof mat.roughness === 'number') {
-                mat.roughness = 0.35;
+              node.renderOrder = 1;
+            } else {
+              mat.transparent = false;
+              mat.opacity = 1.0;
+              mat.alphaTest = 0;
+              mat.depthWrite = true;
+              mat.depthTest = true;
+              mat.side = THREE.FrontSide;
+              if (typeof mat.transmission === 'number') {
+                mat.transmission = 0;
               }
-              if (typeof mat.metalness === 'number') {
-                mat.metalness = 0.0;
-              }
-              if (typeof mat.emissive !== 'undefined') {
-                mat.emissive = new THREE.Color(0x0f0f10);
-              }
-              console.log('Brightened body-side material:', node.name || '(unnamed mesh)');
             }
 
             mat.needsUpdate = true;
