@@ -872,6 +872,36 @@ const create3DEnvironment = () => {
 
   console.log('Attempting to load GLTF car model...');
 
+  const loadingOverlay = document.createElement('div');
+  loadingOverlay.id = 'model-loading-overlay';
+  loadingOverlay.innerHTML = `
+    <div class="loading-spinner" aria-hidden="true"></div>
+    <div class="loading-title">Loading Sunburst…</div>
+    <div class="loading-progress-track" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+      <div class="loading-progress-bar"></div>
+    </div>
+    <div class="loading-percent">0%</div>
+  `;
+  document.body.appendChild(loadingOverlay);
+
+  const loadingProgressBar = loadingOverlay.querySelector('.loading-progress-bar');
+  const loadingProgressTrack = loadingOverlay.querySelector('.loading-progress-track');
+  const loadingPercentEl = loadingOverlay.querySelector('.loading-percent');
+
+  function updateModelLoadingProgress(percent) {
+    const clamped = Math.min(100, Math.max(0, percent));
+    loadingProgressBar.style.width = `${clamped}%`;
+    loadingProgressTrack.setAttribute('aria-valuenow', String(Math.round(clamped)));
+    loadingPercentEl.textContent = `${Math.round(clamped)}%`;
+  }
+
+  function hideModelLoading() {
+    loadingOverlay.classList.add('is-hidden');
+    setTimeout(() => {
+      loadingOverlay.remove();
+    }, 400);
+  }
+
   function createSimpleCar() {
     // Car body
     const bodyGeometry = new THREE.BoxGeometry(2, 0.8, 1);
@@ -1098,21 +1128,26 @@ const create3DEnvironment = () => {
       scene.add(car);
       console.log('Car added to scene. Total wheels found:', wheels.length);
       console.log('Model structure:', gltf.scene);
+      hideModelLoading();
     },
     (progress) => {
-      const percent = (progress.loaded / progress.total * 100).toFixed(2);
-      console.log('Loading model: ' + percent + '%');
+      if (progress.total > 0) {
+        const percent = (progress.loaded / progress.total) * 100;
+        updateModelLoadingProgress(percent);
+        console.log('Loading model: ' + percent.toFixed(2) + '%');
+      }
     },
     (error) => {
       console.error('❌ Error loading model:', error);
       if (window.location.protocol === 'file:') {
         console.error('GLB/GLTF assets must be served over HTTP. Open via a local server, not file://');
-        showToast('Model load failed: use http://127.0.0.1:8000 (not file://)');
+        showToast('Model load failed: use http://127.0.0.1:8080 (not file://)');
       } else {
         showToast('Model load failed, using fallback car');
       }
       console.log('Falling back to simple car...');
       createSimpleCar();
+      hideModelLoading();
     }
   );
 
