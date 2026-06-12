@@ -808,7 +808,7 @@ const create3DEnvironment = () => {
     const n = signalName.toLowerCase();
     if (n.includes('park')) {
       handleParkingBrake(value);
-    } else if (n.includes('speed') || n.includes('velocity')) {
+    } else if (n.includes('mph') || n.includes('speed') || n.includes('velocity')) {
       // Handle speed signals (expecting MPH, clamped at 75)
       updateSpeed(value);
       showToast(`Speed: ${currentSpeed.toFixed(0)} mph`);
